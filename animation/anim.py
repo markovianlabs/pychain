@@ -155,7 +155,7 @@ class Anim(MCMC):
                 axarr[0].set_xlim(-10, 10)
                 axarr[0].set_ylim(-50, 100)
                 axarr[0].errorbar(
-                    self.X, self.Y, self.delta,
+                    self.X, self.Y, np.abs(self.delta),
                     color="k", ms=8, ls="", marker="s",
                 )
                 axarr[0].plot(self.X, self.FittingFunction(OldStep), "k", ls="-", lw=2)
@@ -189,7 +189,7 @@ class Anim(MCMC):
         axarr[0].set_xlim(-10, 10)
         axarr[0].set_ylim(-50, 100)
         axarr[0].errorbar(
-            self.X, self.Y, self.delta,
+            self.X, self.Y, np.abs(self.delta),
             color="k", ms=8, ls="", marker="s",
         )
         axarr[0].plot(self.X, self.FittingFunction(BestStep), "k", ls="-", lw=2)
