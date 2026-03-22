@@ -19,8 +19,7 @@ class TestLinearFit:
         return LinearFit(m=5.0, c=25.0, RedStd=15.0)
 
     def test_returns_chain_result(self, chain):
-        result = chain.MainChain()
-        assert isinstance(result, ChainResult)
+        assert isinstance(chain.MainChain(), ChainResult)
 
     def test_accepted_steps_match_target(self, chain):
         result = chain.MainChain()
@@ -28,7 +27,6 @@ class TestLinearFit:
 
     def test_acceptance_ratio_reasonable(self, chain):
         result = chain.MainChain()
-        # A well-tuned chain should accept somewhere between 5% and 95%
         assert 0.05 < result.acceptance_ratio < 0.95
 
     def test_best_params_within_bounds(self, chain):
@@ -42,23 +40,39 @@ class TestLinearFit:
 
     def test_fitting_function_shape(self, chain):
         params = np.array([5.0, 25.0])
-        out = chain.FittingFunction(params)
-        assert out.shape == chain.X.shape
+        assert chain.FittingFunction(params).shape == chain.X.shape
+
+    def test_chisquare_uses_sigma_not_delta(self, chain):
+        # chi-square should use sigma (fixed), so identical params give same chi2
+        params = np.array([5.0, 25.0])
+        chi1 = chain.chisquare(params)
+        chi2 = chain.chisquare(params)
+        assert chi1 == chi2
+
+    def test_sigma_is_rms_of_uniform(self, chain):
+        # sigma must be RedStd / sqrt(3), not per-point noise draw
+        expected_sigma = 15.0 / np.sqrt(3.0)
+        assert abs(chain.sigma - expected_sigma) < 1e-10
 
     def test_chisquare_positive(self, chain):
-        params = np.array([5.0, 25.0])
-        assert chain.chisquare(params) >= 0.0
+        assert chain.chisquare(np.array([5.0, 25.0])) >= 0.0
+
+    def test_samples_shape(self, chain):
+        result = chain.MainChain()
+        assert result.samples.shape == (result.accepted_steps, 2)
+
+    def test_n_adapt_samples_non_negative(self, chain):
+        result = chain.MainChain()
+        assert result.n_adapt_samples >= 0
 
     def test_reproducibility(self):
-        """Same seed must produce identical results."""
         r1 = LinearFit(m=5.0, c=25.0).MainChain()
         r2 = LinearFit(m=5.0, c=25.0).MainChain()
         assert r1.best_chi2 == r2.best_chi2
         np.testing.assert_array_equal(r1.best_params, r2.best_params)
 
     def test_write2file(self, tmp_path):
-        chain = LinearFit.__new__(LinearFit)
-        LinearFit.__init__(chain, m=5.0, c=25.0)
+        chain = LinearFit(m=5.0, c=25.0)
         chain.write2file = True
         chain.outputfilename = str(tmp_path / "linear.mcmc")
         chain.TargetAcceptedPoints = 50
@@ -78,8 +92,7 @@ class TestQuadraticFit:
         return QuadraticFit(a=1.0, b=10.0, c=25.0, RedStd=15.0)
 
     def test_returns_chain_result(self, chain):
-        result = chain.MainChain()
-        assert isinstance(result, ChainResult)
+        assert isinstance(chain.MainChain(), ChainResult)
 
     def test_accepted_steps_match_target(self, chain):
         result = chain.MainChain()
@@ -103,15 +116,20 @@ class TestQuadraticFit:
 
     def test_fitting_function_shape(self, chain):
         params = np.array([1.0, 10.0, 25.0])
-        out = chain.FittingFunction(params)
-        assert out.shape == chain.X.shape
+        assert chain.FittingFunction(params).shape == chain.X.shape
+
+    def test_sigma_is_rms_of_uniform(self, chain):
+        expected_sigma = 15.0 / np.sqrt(3.0)
+        assert abs(chain.sigma - expected_sigma) < 1e-10
 
     def test_chisquare_positive(self, chain):
-        params = np.array([1.0, 10.0, 25.0])
-        assert chain.chisquare(params) >= 0.0
+        assert chain.chisquare(np.array([1.0, 10.0, 25.0])) >= 0.0
+
+    def test_samples_shape(self, chain):
+        result = chain.MainChain()
+        assert result.samples.shape == (result.accepted_steps, 3)
 
     def test_reproducibility(self):
-        """Same seed must produce identical results."""
         r1 = QuadraticFit(a=1.0, b=10.0, c=25.0).MainChain()
         r2 = QuadraticFit(a=1.0, b=10.0, c=25.0).MainChain()
         assert r1.best_chi2 == r2.best_chi2

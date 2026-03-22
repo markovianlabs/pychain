@@ -8,7 +8,7 @@ from pychain.mcmc import MCMC, ChainResult
 
 
 # ---------------------------------------------------------------------------
-# Minimal concrete subclass used across all unit tests
+# Minimal concrete subclasses
 # ---------------------------------------------------------------------------
 
 class FixedChi2(MCMC):
@@ -130,6 +130,31 @@ class TestValidation:
 
 
 # ---------------------------------------------------------------------------
+# suggested_goodchi2
+# ---------------------------------------------------------------------------
+
+class TestSuggestedGoodchi2:
+    def test_returns_float(self):
+        val = MCMC.suggested_goodchi2(n_data=25, n_params=2)
+        assert isinstance(val, float)
+
+    def test_greater_than_df(self):
+        # At percentile > 0.5, result should exceed the mean (= df)
+        df = 23
+        val = MCMC.suggested_goodchi2(n_data=25, n_params=2, percentile=0.99)
+        assert val > df
+
+    def test_increases_with_percentile(self):
+        v95 = MCMC.suggested_goodchi2(n_data=30, n_params=3, percentile=0.95)
+        v99 = MCMC.suggested_goodchi2(n_data=30, n_params=3, percentile=0.99)
+        assert v99 > v95
+
+    def test_invalid_percentile_raises(self):
+        with pytest.raises(ValueError, match="percentile"):
+            MCMC.suggested_goodchi2(n_data=25, n_params=2, percentile=1.1)
+
+
+# ---------------------------------------------------------------------------
 # FirstStep
 # ---------------------------------------------------------------------------
 
@@ -154,21 +179,10 @@ class TestFirstStep:
 
 
 # ---------------------------------------------------------------------------
-# NextStep
+# NextStep — proposals may now be out-of-bounds (bounds enforced in MainChain)
 # ---------------------------------------------------------------------------
 
 class TestNextStep:
-    def test_within_bounds(self):
-        sampler = FixedChi2(
-            NumberOfParams=2, Mins=[0.0, 0.0], Maxs=[10.0, 10.0], SDs=[0.5, 0.5],
-            randomseed=0,
-        )
-        current = np.array([5.0, 5.0])
-        for _ in range(100):
-            proposal = sampler.NextStep(current)
-            assert np.all(proposal >= sampler.mins)
-            assert np.all(proposal <= sampler.maxs)
-
     def test_shape_preserved(self):
         sampler = FixedChi2(NumberOfParams=3, Mins=[0.0]*3, Maxs=[1.0]*3, SDs=[0.1]*3)
         current = np.array([0.5, 0.5, 0.5])
@@ -179,6 +193,13 @@ class TestNextStep:
         current = np.array([5.0, 5.0])
         assert isinstance(sampler.NextStep(current), np.ndarray)
 
+    def test_proposal_is_centred_on_current(self):
+        # With many proposals, mean should be close to current step
+        sampler = FixedChi2(randomseed=0, SDs=[0.1, 0.1])
+        current = np.array([5.0, 5.0])
+        proposals = np.array([sampler.NextStep(current) for _ in range(5000)])
+        np.testing.assert_allclose(proposals.mean(axis=0), current, atol=0.1)
+
 
 # ---------------------------------------------------------------------------
 # MetropolisHastings
@@ -187,21 +208,19 @@ class TestNextStep:
 class TestMetropolisHastings:
     def test_better_step_always_accepted(self):
         sampler = FixedChi2(randomseed=0)
-        # If new chi2 is much lower, likelihood ratio >> 1 → always accepted
         for _ in range(50):
             assert sampler.MetropolisHastings(Oldchi2=100.0, Newchi2=1.0) is True
 
     def test_much_worse_step_almost_always_rejected(self):
         sampler = FixedChi2(randomseed=0)
-        # exp(-(1000 - 1) / 2) ≈ 0 → essentially always rejected
         results = [sampler.MetropolisHastings(Oldchi2=1.0, Newchi2=1000.0) for _ in range(100)]
-        assert sum(results) == 0  # all rejected
+        assert sum(results) == 0
 
-    def test_equal_chi2_accepted_about_half(self):
+    def test_equal_chi2_always_accepted(self):
         sampler = FixedChi2(randomseed=42)
-        # likelihood_ratio == 1.0, accepted iff uniform < 1.0 → always accepted
+        # ratio == 1.0, always >= Uniform[0,1)
         results = [sampler.MetropolisHastings(Oldchi2=5.0, Newchi2=5.0) for _ in range(100)]
-        assert all(results)  # ratio=1.0, always >= uniform in [0,1)
+        assert all(results)
 
     def test_returns_bool(self):
         sampler = FixedChi2()
@@ -239,13 +258,43 @@ class TestMainChain:
     def test_best_chi2_is_minimum(self):
         sampler = ParabolicChi2(TargetAcceptedPoints=200)
         result = sampler.MainChain()
-        # best_chi2 should be consistent with best_params
         assert abs(result.best_chi2 - sampler.chisquare(result.best_params)) < 1e-10
 
     def test_total_steps_geq_accepted(self):
         sampler = ParabolicChi2(TargetAcceptedPoints=100)
         result = sampler.MainChain()
         assert result.total_steps >= result.accepted_steps
+
+    def test_samples_shape(self):
+        target = 50
+        sampler = ParabolicChi2(TargetAcceptedPoints=target)
+        result = sampler.MainChain()
+        assert result.samples.shape == (target, 2)
+
+    def test_n_adapt_samples_non_negative(self):
+        sampler = ParabolicChi2(TargetAcceptedPoints=100)
+        result = sampler.MainChain()
+        assert result.n_adapt_samples >= 0
+
+    def test_n_adapt_samples_zero_when_no_adaptation(self):
+        # EstimateCovariance=False → no adaptation → n_adapt_samples must be 0
+        sampler = ParabolicChi2(TargetAcceptedPoints=100, EstimateCovariance=False)
+        result = sampler.MainChain()
+        assert result.n_adapt_samples == 0
+
+    def test_max_steps_stops_early(self):
+        # Force very tight bounds so acceptance rate is near zero
+        class HardChi2(MCMC):
+            def chisquare(self, p):
+                return float(np.sum(p ** 2))  # minimum far from prior centre
+
+        sampler = HardChi2(
+            NumberOfParams=2, Mins=[9.0, 9.0], Maxs=[10.0, 10.0],
+            SDs=[0.001, 0.001], randomseed=0, EstimateCovariance=False,
+            TargetAcceptedPoints=100000,
+        )
+        result = sampler.MainChain(max_steps=50)
+        assert result.total_steps <= 50
 
     def test_write2file(self, tmp_path):
         output = tmp_path / "chain.mcmc"

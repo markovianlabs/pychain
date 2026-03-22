@@ -20,7 +20,10 @@ class QuadraticFit(MCMC):
     c : float
         Fiducial intercept.
     RedStd : float
-        Half-range of the uniform noise added to the synthetic data.
+        Half-range of the uniform noise U(-RedStd, RedStd) added to the data.
+        The RMS (sigma) of this distribution is RedStd / sqrt(3), which is used
+        as the measurement uncertainty in the chi-square — not the noise
+        realisation itself.
     """
 
     def __init__(
@@ -43,8 +46,12 @@ class QuadraticFit(MCMC):
         )
 
         self.X = np.linspace(0, 10, 25)
-        self.delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
-        self.Y = (a * self.X ** 2 + b * self.X + c) + self.delta
+        # Noise realisations — used only to generate the data
+        delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
+        self.Y = (a * self.X ** 2 + b * self.X + c) + delta
+
+        # Known measurement uncertainty: RMS of Uniform(-RedStd, RedStd) = RedStd/sqrt(3)
+        self.sigma = RedStd / np.sqrt(3.0)
 
     def FittingFunction(self, Params: np.ndarray) -> np.ndarray:
         """
@@ -66,6 +73,8 @@ class QuadraticFit(MCMC):
         """
         Compute chi-square between data and the quadratic model.
 
+        Uses the known noise RMS (sigma = RedStd / sqrt(3)) as the denominator.
+
         Parameters
         ----------
         Params : np.ndarray
@@ -74,9 +83,9 @@ class QuadraticFit(MCMC):
         Returns
         -------
         float
-            Sum of squared residuals normalised by noise.
+            Sum of squared normalised residuals.
         """
-        residuals = (self.Y - self.FittingFunction(Params)) / self.delta
+        residuals = (self.Y - self.FittingFunction(Params)) / self.sigma
         return float(np.sum(residuals ** 2))
 
 
@@ -89,3 +98,4 @@ if __name__ == "__main__":
     print(f"Acceptance ratio    : {result.acceptance_ratio:.4f}")
     print(f"Best chi2           : {result.best_chi2:.4f}")
     print(f"Best params [a,b,c] : {result.best_params}")
+    print(f"Adapt burn-in       : {result.n_adapt_samples} samples")

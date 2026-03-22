@@ -4,11 +4,14 @@ Markov Chain Monte Carlo (MCMC) sampling using the Metropolis-Hastings algorithm
 Copyright: MarkovianLabs
 """
 
+import math
 import logging
 from abc import ABC, abstractmethod
 from typing import NamedTuple
 
 import numpy as np
+
+from pychain._utils import norm_ppf as _norm_ppf
 
 __author__ = "Irshad Mohammed <creativeishu@gmail.com>"
 
@@ -32,7 +35,13 @@ class ChainResult(NamedTuple):
         Total number of accepted steps.
     samples : np.ndarray
         All accepted parameter vectors, shape ``(accepted_steps, NumberOfParams)``.
-        Use this for diagnostics (autocorrelation, ESS, corner plots, etc.).
+        **Important**: the first ``n_adapt_samples`` rows were collected while the
+        proposal covariance was still adapting and should be treated as burn-in.
+        Use ``diagnostics.burn_in(result.samples, result.n_adapt_samples)`` to
+        discard them before analysis.
+    n_adapt_samples : int
+        Number of accepted samples collected during the adaptation phase.
+        These should be discarded as additional burn-in — see ``samples`` above.
     """
 
     acceptance_ratio: float
@@ -41,6 +50,7 @@ class ChainResult(NamedTuple):
     total_steps: int
     accepted_steps: int
     samples: np.ndarray
+    n_adapt_samples: int
 
 
 class MCMC(ABC):
@@ -60,10 +70,9 @@ class MCMC(ABC):
         Must have length equal to ``NumberOfParams``.
     Maxs : list[float] | None
         Upper bounds for each parameter (uniform prior).
-        Must have length equal to ``NumberOfParams`` and element-wise greater than ``Mins``.
+        Must be element-wise strictly greater than ``Mins``.
     SDs : list[float] | None
-        Initial proposal standard deviations for each parameter (all must be > 0).
-        Must have length equal to ``NumberOfParams``.
+        Initial proposal standard deviations for each parameter (all > 0).
     alpha : float
         Scaling factor applied to the proposal covariance matrix. Must be > 0.
     write2file : bool
@@ -76,11 +85,21 @@ class MCMC(ABC):
         If True, logs detailed per-step information at DEBUG level. Default: False.
     EstimateCovariance : bool
         If True, the proposal covariance is updated from the first ``CovNum``
-        good samples (chi2 < ``goodchi2``). Default: True.
+        accepted samples with chi2 < ``goodchi2``. Default: True.
+        Samples collected during this adaptation phase should be discarded
+        as burn-in (see ``ChainResult.n_adapt_samples``).
     CovNum : int
         Number of good samples used to estimate the proposal covariance. Must be > 1.
     goodchi2 : float
-        Chi-square threshold below which a sample is considered a good fit. Must be > 0.
+        Chi-square threshold that defines a "good" sample for covariance estimation
+        and for the one-time proposal scale-down.
+
+        **How to choose**: for a well-specified model with ``n_data`` observations
+        and ``n_params`` free parameters, the chi-square statistic follows a
+        chi2(df = n_data - n_params) distribution under the null. A sensible
+        threshold is the 95th–99th percentile of that distribution. Use the
+        convenience method :meth:`suggested_goodchi2` to compute this
+        automatically. Default: 35.0 (suitable for ~23 degrees of freedom).
     """
 
     def __init__(
@@ -132,7 +151,10 @@ class MCMC(ABC):
         sds_arr = np.array(SDs, dtype=float)
 
         if np.any(maxs_arr <= mins_arr):
-            raise ValueError("Each element of Maxs must be strictly greater than the corresponding element of Mins.")
+            raise ValueError(
+                "Each element of Maxs must be strictly greater than the "
+                "corresponding element of Mins."
+            )
         if np.any(sds_arr <= 0):
             raise ValueError("All elements of SDs must be positive.")
 
@@ -164,6 +186,44 @@ class MCMC(ABC):
             f"goodchi2={self.goodchi2})"
         )
 
+    @staticmethod
+    def suggested_goodchi2(
+        n_data: int, n_params: int, percentile: float = 0.99
+    ) -> float:
+        """
+        Suggest a ``goodchi2`` threshold from the chi-square distribution.
+
+        For a well-specified model, chi2 ~ chi2(df = n_data - n_params).
+        This returns the requested percentile of that distribution using the
+        Wilson-Hilferty normal approximation (accurate to < 1% for df >= 3).
+
+        Parameters
+        ----------
+        n_data : int
+            Number of data points.
+        n_params : int
+            Number of free model parameters.
+        percentile : float
+            Desired percentile in (0, 1). Default: 0.99.
+
+        Returns
+        -------
+        float
+            Suggested goodchi2 threshold.
+
+        Examples
+        --------
+        >>> MCMC.suggested_goodchi2(n_data=25, n_params=2, percentile=0.99)
+        40.29  # approximate
+        """
+        if not (0 < percentile < 1):
+            raise ValueError("percentile must be in (0, 1).")
+        df = max(n_data - n_params, 1)
+        # Wilson-Hilferty approximation for chi-square quantile
+        z_p = float(_norm_ppf(percentile))
+        val = df * (1.0 - 2.0 / (9.0 * df) + z_p * math.sqrt(2.0 / (9.0 * df))) ** 3
+        return float(max(val, float(df)))
+
     def FirstStep(self) -> np.ndarray:
         """
         Draw a random initial point uniformly within the parameter bounds.
@@ -181,8 +241,10 @@ class MCMC(ABC):
         """
         Propose the next step via a multivariate normal centred on the current step.
 
-        Proposals that fall outside the prior bounds are rejected and redrawn
-        until a valid proposal is found.
+        The proposal is **not** clipped or resampled here. Enforcement of the
+        uniform prior happens in :meth:`MainChain` by rejecting out-of-bounds
+        proposals *before* evaluating chi-square. This preserves detailed
+        balance — resampling inside the proposal would break it near boundaries.
 
         Parameters
         ----------
@@ -192,12 +254,9 @@ class MCMC(ABC):
         Returns
         -------
         np.ndarray
-            Proposed parameter vector of shape ``(NumberOfParams,)``.
+            Proposed parameter vector (may be outside prior bounds).
         """
-        proposal = np.random.multivariate_normal(Oldstep, self.CovMat)
-        while np.any(proposal < self.mins) or np.any(proposal > self.maxs):
-            proposal = np.random.multivariate_normal(Oldstep, self.CovMat)
-        return proposal
+        return np.random.multivariate_normal(Oldstep, self.CovMat)
 
     def MetropolisHastings(self, Oldchi2: float, Newchi2: float) -> bool:
         """
@@ -218,18 +277,26 @@ class MCMC(ABC):
             True if the proposed step is accepted, False otherwise.
         """
         delta = Newchi2 - Oldchi2
-        # If the new step is better (delta < 0), always accept without computing exp.
+        # Better or equal step: always accept (avoids overflow in exp).
         if delta <= 0:
             return True
-        likelihood_ratio = np.exp(-delta / 2.0)
-        return bool(likelihood_ratio >= np.random.uniform())
+        return bool(np.exp(-delta / 2.0) >= np.random.uniform())
 
     @abstractmethod
     def chisquare(self, Params: np.ndarray) -> float:
         """
-        Compute the chi-square (negative log-likelihood proxy) for a parameter vector.
+        Compute the chi-square (–2 × log-likelihood) for a parameter vector.
 
-        Subclasses **must** override this method to define the likelihood of their model.
+        Subclasses **must** override this method.
+
+        The denominator in the chi-square must be the **known measurement
+        uncertainty** (sigma), not the noise realization drawn for the data.
+        For Gaussian noise with known sigma_i:
+
+            chi2 = sum_i ((Y_i - model_i) / sigma_i)^2
+
+        For uniform noise on [-R, R], the equivalent Gaussian sigma is
+        R / sqrt(3) (the RMS of the uniform distribution).
 
         Parameters
         ----------
@@ -242,15 +309,32 @@ class MCMC(ABC):
             Chi-square value (lower is better).
         """
 
-    def MainChain(self) -> ChainResult:
+    def MainChain(self, max_steps: int = 10_000_000) -> ChainResult:
         """
-        Run the MCMC chain until ``TargetAcceptedPoints`` samples are collected.
+        Run the MCMC chain until ``TargetAcceptedPoints`` samples are collected
+        or ``max_steps`` total proposals are made.
+
+        **Uniform prior enforcement**: proposals outside ``[Mins, Maxs]`` are
+        rejected *before* calling ``chisquare()``, preserving detailed balance.
+        This differs from rejection-resampling inside the proposal, which would
+        break detailed balance near boundaries.
+
+        **Burn-in**: the returned ``ChainResult.samples`` includes all accepted
+        samples, but the first ``ChainResult.n_adapt_samples`` were generated
+        while the proposal covariance was still adapting and should be discarded:
+
+            samples = diagnostics.burn_in(result.samples, result.n_adapt_samples)
+
+        Parameters
+        ----------
+        max_steps : int
+            Hard upper limit on total proposed steps. Prevents infinite loops
+            when acceptance rate is very low. Default: 10,000,000.
 
         Returns
         -------
         ChainResult
-            A named tuple with acceptance ratio, best chi-square, best parameter
-            vector, total steps, and accepted steps.
+            Named tuple with all chain outputs.
         """
         multiplicity = 0
         accepted = 0
@@ -258,6 +342,8 @@ class MCMC(ABC):
         one_time_update_cov = True
         est_cov_list: list[np.ndarray] = []
         all_samples: list[np.ndarray] = []
+        adapt_end_count = 0          # accepted count when adaptation finishes
+        adaptation_active = self.EstimateCovariance  # track if we started adapting
 
         OldStep = self.FirstStep()
         Oldchi2 = self.chisquare(OldStep)
@@ -271,7 +357,18 @@ class MCMC(ABC):
 
             while True:
                 step += 1
+
                 if accepted == self.TargetAcceptedPoints:
+                    break
+
+                # Guard against very low acceptance rates / degenerate chains
+                if step >= max_steps:
+                    logger.warning(
+                        "max_steps=%d reached before collecting %d accepted samples "
+                        "(got %d). Consider widening bounds, increasing SDs, or "
+                        "reducing TargetAcceptedPoints.",
+                        max_steps, self.TargetAcceptedPoints, accepted,
+                    )
                     break
 
                 if step % 1000 == 0:
@@ -282,6 +379,14 @@ class MCMC(ABC):
 
                 multiplicity += 1
                 NewStep = self.NextStep(OldStep)
+
+                # --- Enforce uniform prior (Fix 1: preserves detailed balance) ---
+                # Out-of-bounds proposals are rejected here, not resampled inside
+                # NextStep. Resampling would create an asymmetric proposal and
+                # break detailed balance near the boundary.
+                if np.any(NewStep < self.mins) or np.any(NewStep > self.maxs):
+                    continue
+
                 Newchi2 = self.chisquare(NewStep)
 
                 if self.debug:
@@ -293,7 +398,7 @@ class MCMC(ABC):
                         Newchi2, fmt.format(*NewStep),
                     )
 
-                # Scale down proposal once we hit a good region
+                # Scale down proposal once we first reach a good region
                 if Newchi2 < self.goodchi2 and one_time_update_cov:
                     self.CovMat = self.alpha * np.diag(self.SD ** 2)
                     one_time_update_cov = False
@@ -316,6 +421,12 @@ class MCMC(ABC):
                         self.CovMat = np.cov(np.array(est_cov_list).T)
                         logger.debug("Estimated covariance matrix:\n%s", self.CovMat)
                         self.EstimateCovariance = False
+                        adapt_end_count = accepted
+                        logger.info(
+                            "Adaptation complete after %d accepted samples. "
+                            "Treat these as additional burn-in.",
+                            adapt_end_count,
+                        )
 
                     # Track global best
                     if Newchi2 < Bestchi2:
@@ -327,7 +438,6 @@ class MCMC(ABC):
                             Bestchi2, step, accepted, fmt.format(*BestStep),
                         )
 
-                    # Write accepted sample to file
                     if self.write2file:
                         print(
                             f"{step}\t{Newchi2:.6f}\t{multiplicity}\t"
@@ -335,10 +445,22 @@ class MCMC(ABC):
                             file=outfile,
                         )
 
-        acceptance_ratio = accepted / step
+        acceptance_ratio = accepted / step if step > 0 else 0.0
+
+        # If adaptation was enabled but never completed (chain ended early),
+        # all samples should be treated as adaptation-phase samples.
+        if adaptation_active and self.EstimateCovariance:
+            adapt_end_count = accepted
+            logger.warning(
+                "Adaptation did not complete (%d good samples collected, "
+                "%d required). All %d samples should be treated as burn-in.",
+                icov, self.CovNum, accepted,
+            )
+
         logger.info(
-            "Chain complete | Best chi2: %.5f | Acceptance ratio: %.5f",
-            Bestchi2, acceptance_ratio,
+            "Chain complete | Best chi2: %.5f | Acceptance ratio: %.5f | "
+            "Adapt burn-in samples: %d",
+            Bestchi2, acceptance_ratio, adapt_end_count,
         )
 
         return ChainResult(
@@ -347,7 +469,8 @@ class MCMC(ABC):
             best_params=BestStep,
             total_steps=step,
             accepted_steps=accepted,
-            samples=np.array(all_samples),
+            samples=np.array(all_samples) if all_samples else np.empty((0, self.NumberOfParams)),
+            n_adapt_samples=adapt_end_count,
         )
 
 

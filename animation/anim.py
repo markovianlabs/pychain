@@ -63,8 +63,12 @@ class Anim(MCMC):
         self.m = m
         self.c = c
         self.X = np.linspace(-10, 10, 25)
-        self.delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
-        self.Y = (m * self.X + c) + self.delta
+        delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
+        self.Y = (m * self.X + c) + delta
+        # Known noise RMS: sigma of Uniform(-RedStd, RedStd) = RedStd/sqrt(3)
+        self.sigma = RedStd / np.sqrt(3.0)
+        # Keep abs(delta) for error-bar display only
+        self.abs_delta = np.abs(delta)
         self.delay = delay
 
     def FittingFunction(self, Params: np.ndarray) -> np.ndarray:
@@ -97,7 +101,7 @@ class Anim(MCMC):
         float
             Sum of squared residuals normalised by noise.
         """
-        residuals = (self.Y - self.FittingFunction(Params)) / self.delta
+        residuals = (self.Y - self.FittingFunction(Params)) / self.sigma
         return float(np.sum(residuals ** 2))
 
     def MainChain(self) -> float:
@@ -135,8 +139,12 @@ class Anim(MCMC):
             multiplicity += 1
 
             NewStep = self.NextStep(OldStep)
-            Newchi2 = self.chisquare(NewStep)
 
+            # Enforce prior bounds before evaluating chi2 (preserves detailed balance)
+            if np.any(NewStep < self.mins) or np.any(NewStep > self.maxs):
+                continue
+
+            Newchi2 = self.chisquare(NewStep)
             GoodPoint = self.MetropolisHastings(Oldchi2, Newchi2)
 
             if Newchi2 < 2 * len(self.Y):
@@ -155,7 +163,7 @@ class Anim(MCMC):
                 axarr[0].set_xlim(-10, 10)
                 axarr[0].set_ylim(-50, 100)
                 axarr[0].errorbar(
-                    self.X, self.Y, np.abs(self.delta),
+                    self.X, self.Y, self.abs_delta,
                     color="k", ms=8, ls="", marker="s",
                 )
                 axarr[0].plot(self.X, self.FittingFunction(OldStep), "k", ls="-", lw=2)
@@ -189,7 +197,7 @@ class Anim(MCMC):
         axarr[0].set_xlim(-10, 10)
         axarr[0].set_ylim(-50, 100)
         axarr[0].errorbar(
-            self.X, self.Y, np.abs(self.delta),
+            self.X, self.Y, self.abs_delta,
             color="k", ms=8, ls="", marker="s",
         )
         axarr[0].plot(self.X, self.FittingFunction(BestStep), "k", ls="-", lw=2)

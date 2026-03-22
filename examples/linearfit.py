@@ -18,7 +18,10 @@ class LinearFit(MCMC):
     c : float
         Fiducial intercept.
     RedStd : float
-        Half-range of the uniform noise added to the synthetic data.
+        Half-range of the uniform noise U(-RedStd, RedStd) added to the data.
+        The RMS (sigma) of this distribution is RedStd / sqrt(3), which is used
+        as the measurement uncertainty in the chi-square — not the noise
+        realisation itself.
     """
 
     def __init__(self, m: float = 5.0, c: float = 25.0, RedStd: float = 15.0) -> None:
@@ -35,8 +38,13 @@ class LinearFit(MCMC):
         )
 
         self.X = np.linspace(-10, 10, 25)
-        self.delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
-        self.Y = (m * self.X + c) + self.delta
+        # Noise realisations — used only to generate the data
+        delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
+        self.Y = (m * self.X + c) + delta
+
+        # Known measurement uncertainty: RMS of Uniform(-RedStd, RedStd) = RedStd/sqrt(3)
+        # This is the correct denominator for chi-square — NOT the noise draw.
+        self.sigma = RedStd / np.sqrt(3.0)
 
     def FittingFunction(self, Params: np.ndarray) -> np.ndarray:
         """
@@ -58,6 +66,10 @@ class LinearFit(MCMC):
         """
         Compute chi-square between data and the linear model.
 
+        Uses the known noise RMS (sigma = RedStd / sqrt(3)) as the denominator,
+        not the noise realisations. This is statistically correct: the chi-square
+        denominator must be the measurement uncertainty, not the noise draw.
+
         Parameters
         ----------
         Params : np.ndarray
@@ -66,9 +78,9 @@ class LinearFit(MCMC):
         Returns
         -------
         float
-            Sum of squared residuals normalised by noise.
+            Sum of squared normalised residuals.
         """
-        residuals = (self.Y - self.FittingFunction(Params)) / self.delta
+        residuals = (self.Y - self.FittingFunction(Params)) / self.sigma
         return float(np.sum(residuals ** 2))
 
 
@@ -81,3 +93,4 @@ if __name__ == "__main__":
     print(f"Acceptance ratio : {result.acceptance_ratio:.4f}")
     print(f"Best chi2        : {result.best_chi2:.4f}")
     print(f"Best params [m,c]: {result.best_params}")
+    print(f"Adapt burn-in    : {result.n_adapt_samples} samples")
