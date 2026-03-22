@@ -1,0 +1,7 @@
+numpy>=1.24
+matplotlib>=3.7
+corner>=2.2
+
+# dev / testing
+pytest>=7.4
+pytest-cov>=4.1

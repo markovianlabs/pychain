@@ -1,73 +1,83 @@
 """
-Example demonstrating the usage for the linear-fit scenario.
+Example: fit a linear model y = mx + c using PyChain MCMC.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
-import sys
-sys.path.insert(0,'../src')
-from mcmc import MCMC
+from pychain.mcmc import MCMC
 
-#----------------------------------------------------------
 
 class LinearFit(MCMC):
-	"""
-	Extends the original MCMC class to sample the parameters of a linear model.
+    """
+    MCMC sampler for a linear model y = mx + c.
 
-	Parameters
-	-----------
-	MCMC (Class): Parent MCMC class.
-	m (Float): Feducial value of the slope of the linear data.
-	c (Float): Feducial value of the intercept of the linear data.
-	RedStd (Float): Feducial value of the standard deviation of the linear data.
-	"""
-	def __init__(self, m=5.0, c=25.0, RedStd=15.0):
-		"""
-		Instantiates the class by synthetically generating data.
-		"""
-		MCMC.__init__(self, TargetAcceptedPoints=10000, \
-				NumberOfParams=2, Mins=[0.0,20.0], Maxs=[10.0,30.0], SDs=[1.0,2.0], alpha=0.2,\
-				write2file=True, outputfilename='chain.mcmc', randomseed=250192)		
+    Parameters
+    ----------
+    m : float
+        Fiducial slope.
+    c : float
+        Fiducial intercept.
+    RedStd : float
+        Half-range of the uniform noise added to the synthetic data.
+    """
 
-		self.X=np.linspace(-10, 10, 25)
-		self.delta = np.random.uniform(low=-1*RedStd, high=RedStd, size=len(self.X))
-		self.Y = (m*self.X + c) + self.delta
+    def __init__(self, m: float = 5.0, c: float = 25.0, RedStd: float = 15.0) -> None:
+        super().__init__(
+            TargetAcceptedPoints=10000,
+            NumberOfParams=2,
+            Mins=[0.0, 20.0],
+            Maxs=[10.0, 30.0],
+            SDs=[1.0, 2.0],
+            alpha=0.2,
+            write2file=True,
+            outputfilename="chain.mcmc",
+            randomseed=250192,
+        )
 
-#----------------------------------------------------------
+        self.X = np.linspace(-10, 10, 25)
+        self.delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
+        self.Y = (m * self.X + c) + self.delta
 
-	def FittingFunction(self, Params):
-		"""
-		Parametric form of the model.
+    def FittingFunction(self, Params: np.ndarray) -> np.ndarray:
+        """
+        Evaluate the linear model.
 
-		Parameters
-		----------
-		Params (1d array): Numpy array containing values of the parameters. 
+        Parameters
+        ----------
+        Params : np.ndarray
+            [m, c] — slope and intercept.
 
-		Returns
-		-------
-		model values (y = mx + c)
-		"""
-		return Params[0]*self.X + Params[1]
+        Returns
+        -------
+        np.ndarray
+            Model values y = m*X + c.
+        """
+        return Params[0] * self.X + Params[1]
 
-#----------------------------------------------------------
+    def chisquare(self, Params: np.ndarray) -> float:
+        """
+        Compute chi-square between data and the linear model.
 
-	def chisquare(self, Params):
-		"""
-		Computes Chi-square.
+        Parameters
+        ----------
+        Params : np.ndarray
+            [m, c].
 
-		Parameters
-		----------
-		Params (1d array): Numpy array containing values of the parameters. 
+        Returns
+        -------
+        float
+            Sum of squared residuals normalised by noise.
+        """
+        residuals = (self.Y - self.FittingFunction(Params)) / self.delta
+        return float(np.sum(residuals ** 2))
 
-		Returns
-		-------
-		chi square.
-		"""
-		kisquare = ((self.Y-self.FittingFunction(Params))/self.delta)**2
-		return np.sum(kisquare)
 
-#==============================================================================
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-if __name__=="__main__":
-	co = LinearFit()
-	print co.MainChain()
+    chain = LinearFit()
+    result = chain.MainChain()
+    print(f"Acceptance ratio : {result.acceptance_ratio:.4f}")
+    print(f"Best chi2        : {result.best_chi2:.4f}")
+    print(f"Best params [m,c]: {result.best_params}")

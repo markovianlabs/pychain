@@ -1,72 +1,91 @@
 """
-Example demonstrating the usage for the quadratic-fit scenario.
+Example: fit a quadratic model y = ax^2 + bx + c using PyChain MCMC.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
-import sys
-sys.path.insert(0,'../src')
-from mcmc import MCMC
+from pychain.mcmc import MCMC
 
-#----------------------------------------------------------
 
 class QuadraticFit(MCMC):
-	"""
-	Extends the original MCMC class to sample the parameters of a quadratic model (y = ax^2 + bx + c)
+    """
+    MCMC sampler for a quadratic model y = ax^2 + bx + c.
 
-	Parameters
-	-----------
-	MCMC (Class): Parent MCMC class.
-	a (Float): Feducial value of the a parameter.
-	b (Float): Feducial value of the b parameter.
-	c (Float): Feducial value of the c parameter.
-	RedStd (Float): Feducial value of the standard deviation of the linear data.
-	"""
-	def __init__(self, a=1.0, b=10.0, c=25.0, RedStd=15.0):
+    Parameters
+    ----------
+    a : float
+        Fiducial quadratic coefficient.
+    b : float
+        Fiducial linear coefficient.
+    c : float
+        Fiducial intercept.
+    RedStd : float
+        Half-range of the uniform noise added to the synthetic data.
+    """
 
-		MCMC.__init__(self, TargetAcceptedPoints=10000, \
-				NumberOfParams=3, Mins=[-5.0, 5.0, 20], Maxs=[5.0, 15.0, 30.0], SDs=[0.7,4.0,7.0], alpha=0.01,\
-				write2file=True, outputfilename='chain.mcmc', randomseed=250192)		
+    def __init__(
+        self,
+        a: float = 1.0,
+        b: float = 10.0,
+        c: float = 25.0,
+        RedStd: float = 15.0,
+    ) -> None:
+        super().__init__(
+            TargetAcceptedPoints=10000,
+            NumberOfParams=3,
+            Mins=[-5.0, 5.0, 20.0],
+            Maxs=[5.0, 15.0, 30.0],
+            SDs=[0.7, 4.0, 7.0],
+            alpha=0.01,
+            write2file=True,
+            outputfilename="chain.mcmc",
+            randomseed=250192,
+        )
 
-		self.X=np.linspace(0, 10, 25)
-		self.delta = np.random.uniform(low=-1*RedStd, high=RedStd, size=len(self.X))
-		self.Y = (a*self.X**2 + b*self.X + c) + self.delta
+        self.X = np.linspace(0, 10, 25)
+        self.delta = np.random.uniform(low=-RedStd, high=RedStd, size=len(self.X))
+        self.Y = (a * self.X ** 2 + b * self.X + c) + self.delta
 
-#----------------------------------------------------------
+    def FittingFunction(self, Params: np.ndarray) -> np.ndarray:
+        """
+        Evaluate the quadratic model.
 
-	def FittingFunction(self, Params):
-		"""
-		Parametric form of the model.
+        Parameters
+        ----------
+        Params : np.ndarray
+            [a, b, c] — quadratic, linear, and constant coefficients.
 
-		Parameters
-		----------
-		Params (1d array): Numpy array containing values of the parameters. 
+        Returns
+        -------
+        np.ndarray
+            Model values y = a*X^2 + b*X + c.
+        """
+        return Params[0] * self.X ** 2 + Params[1] * self.X + Params[2]
 
-		Returns
-		-------
-		model values (y = ax^2 + bx + c)
-		"""
-		return Params[0]*self.X**2 + Params[1]*self.X + Params[2]
+    def chisquare(self, Params: np.ndarray) -> float:
+        """
+        Compute chi-square between data and the quadratic model.
 
-#----------------------------------------------------------
+        Parameters
+        ----------
+        Params : np.ndarray
+            [a, b, c].
 
-	def chisquare(self, Params):
-		"""
-		Computes Chi-square.
+        Returns
+        -------
+        float
+            Sum of squared residuals normalised by noise.
+        """
+        residuals = (self.Y - self.FittingFunction(Params)) / self.delta
+        return float(np.sum(residuals ** 2))
 
-		Parameters
-		----------
-		Params (1d array): Numpy array containing values of the parameters. 
 
-		Returns
-		-------
-		chi square.
-		"""
-		kisquare = ((self.Y-self.FittingFunction(Params))/self.delta)**2
-		return np.sum(kisquare)
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-#==============================================================================
-
-if __name__=="__main__":
-	co = QuadraticFit()
-	print co.MainChain()
+    chain = QuadraticFit()
+    result = chain.MainChain()
+    print(f"Acceptance ratio    : {result.acceptance_ratio:.4f}")
+    print(f"Best chi2           : {result.best_chi2:.4f}")
+    print(f"Best params [a,b,c] : {result.best_params}")
